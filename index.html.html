@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Múa Rối Nước — Hand Puppet Rhythm Game</title>
+  <style>
+    :root{--gold:#f8d36b;--red:#9d1f1f;--ink:#1b1410;--water:#0e5d75;--jade:#7bdcb5}
+    *{box-sizing:border-box} body{margin:0;font-family:Inter,system-ui,Segoe UI,Arial,sans-serif;background:radial-gradient(circle at top,#21334a,#090c13 60%,#050507);color:#fff;overflow:hidden}
+    #app{display:grid;grid-template-columns:360px 1fr;height:100vh}
+    aside{padding:20px;background:rgba(8,10,18,.86);backdrop-filter:blur(12px);border-right:1px solid rgba(255,255,255,.12);overflow:auto}
+    h1{font-size:28px;line-height:1.05;margin:0 0 8px;color:var(--gold)}
+    p{color:#d9d3c5;font-size:14px;line-height:1.45}.panel{border:1px solid rgba(248,211,107,.25);background:rgba(255,255,255,.06);border-radius:18px;padding:14px;margin:14px 0}.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+    button,label.file{border:0;border-radius:999px;padding:11px 14px;background:linear-gradient(135deg,var(--gold),#ffad42);color:#271600;font-weight:800;cursor:pointer;box-shadow:0 8px 20px rgba(0,0,0,.25)}
+    button.secondary{background:rgba(255,255,255,.12);color:#fff;border:1px solid rgba(255,255,255,.18)} button.danger{background:#e05252;color:white}
+    input[type=file]{display:none} select,input[type=range]{width:100%;margin-top:8px}.meter{height:12px;background:rgba(255,255,255,.1);border-radius:99px;overflow:hidden}.meter>div{height:100%;width:0%;background:linear-gradient(90deg,var(--jade),var(--gold))}
+    main{position:relative} canvas{position:absolute;inset:0;width:100%;height:100%} video{position:absolute;right:18px;top:18px;width:240px;border-radius:18px;transform:scaleX(-1);border:2px solid rgba(248,211,107,.5);opacity:.72;z-index:2}.hidden{display:none}.score{font-size:40px;font-weight:900;color:var(--gold)}.small{font-size:12px;color:#b7b0a4}.badge{display:inline-block;padding:5px 9px;border-radius:99px;background:rgba(123,220,181,.14);border:1px solid rgba(123,220,181,.4);font-size:12px}.kbd{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;background:#0008;padding:2px 6px;border-radius:6px}.warn{color:#ffd0d0}.ok{color:#b7ffd9}
+  </style>
+</head>
+<body>
+<div id="app">
+  <aside>
+    <h1>Múa Rối Nước<br/>Hand Puppet</h1>
+    <p>Move your hand in front of the webcam. Your index finger becomes the puppeteer string. In Challenge Mode, hit the circles with your fingertip to score.</p>
+    <div class="panel">
+      <div class="row">
+        <button id="startCam">Enable Camera</button>
+        <button id="stopCam" class="secondary">Stop</button>
+      </div>
+      <p id="camStatus" class="small">Camera not started.</p>
+      <span class="badge">Needs HTTPS or localhost</span>
+    </div>
+    <div class="panel">
+      <b>Music</b>
+      <p class="small">Upload your own song, or use the built-in beat.</p>
+      <div class="row">
+        <label class="file">Choose Music<input id="audioFile" type="file" accept="audio/*"></label>
+        <button id="demoBeat" class="secondary">Built-in Beat</button>
+        <button id="playPause" class="secondary">Play/Pause</button>
+      </div>
+      <p id="musicName" class="small">No music selected.</p>
+      <label class="small">Volume</label><input id="volume" type="range" min="0" max="1" step="0.01" value="0.75" />
+    </div>
+    <div class="panel">
+      <b>Game Mode</b>
+      <select id="mode"><option value="free">Free puppet dance</option><option value="challenge">Challenge rhythm mode</option></select>
+      <div class="row" style="margin-top:10px"><button id="newGame">New Challenge</button><button id="calibrate" class="secondary">Calibrate Center</button></div>
+      <p class="small">Tip: use your index fingertip. Press <span class="kbd">C</span> to calibrate.</p>
+    </div>
+    <div class="panel">
+      <b>Score</b>
+      <div class="score" id="score">0</div>
+      <div class="meter"><div id="accuracy"></div></div>
+      <p id="hitText" class="small">Hit circles to gain points.</p>
+    </div>
+    <div class="panel">
+      <b>What this prototype proves</b>
+      <p class="small">Webcam → MediaPipe hand landmarks → digital strings → Vietnamese water puppet animation → music/rhythm scoring.</p>
+    </div>
+  </aside>
+  <main>
+    <canvas id="stage"></canvas>
+    <video id="webcam" playsinline muted></video>
+  </main>
+</div>
+<audio id="audio" crossorigin="anonymous"></audio>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+<script>
+const canvas=document.getElementById('stage'),ctx=canvas.getContext('2d');
+const video=document.getElementById('webcam'),audio=document.getElementById('audio');
+const statusEl=document.getElementById('camStatus'),scoreEl=document.getElementById('score'),hitText=document.getElementById('hitText'),acc=document.getElementById('accuracy');
+let W,H,hand=null,indexTip=null,score=0,hits=0,misses=0,circles=[],lastSpawn=0,cam=null,running=false,center={x:.5,y:.45};
+let audioCtx,osc,gain,demoTimer,beatPulse=0;
+function resize(){W=canvas.width=innerWidth-360;H=canvas.height=innerHeight} addEventListener('resize',resize);resize();
+function setStatus(t,cls=''){statusEl.className='small '+cls;statusEl.textContent=t}
+function drawStage(){
+  ctx.clearRect(0,0,W,H);
+  let g=ctx.createLinearGradient(0,0,0,H);g.addColorStop(0,'#152641');g.addColorStop(.55,'#102034');g.addColorStop(.56,'#0e5d75');g.addColorStop(1,'#07313f');ctx.fillStyle=g;ctx.fillRect(0,0,W,H);
+  // traditional theatre roof
+  ctx.fillStyle='#7d1d1d';ctx.beginPath();ctx.moveTo(W*.18,H*.12);ctx.lineTo(W*.5,H*.03);ctx.lineTo(W*.82,H*.12);ctx.lineTo(W*.76,H*.18);ctx.lineTo(W*.24,H*.18);ctx.closePath();ctx.fill();
+  ctx.fillStyle='#f8d36b';ctx.font='bold 28px serif';ctx.textAlign='center';ctx.fillText('SÂN KHẤU MÚA RỐI NƯỚC',W*.5,H*.155);
+  // water waves
+  for(let y=H*.62;y<H;y+=24){ctx.strokeStyle='rgba(169,232,255,.18)';ctx.lineWidth=2;ctx.beginPath();for(let x=0;x<W;x+=18){ctx.lineTo(x,y+Math.sin((x+performance.now()/20)/50)*7)}ctx.stroke()}
+}
+function puppetPoint(){
+  const p=indexTip?{x:indexTip.x*W,y:indexTip.y*H}:{x:center.x*W + Math.sin(performance.now()/700)*90,y:center.y*H};
+  p.x=Math.max(80,Math.min(W-80,p.x)); p.y=Math.max(100,Math.min(H*.72,p.y)); return p;
+}
+function drawPuppet(){
+  const p=puppetPoint(), t=performance.now()/1000, mode=document.getElementById('mode').value;
+  const beat=Math.sin(t*6)+beatPulse; const bodyX=W*.5+(p.x-W*.5)*.42, bodyY=H*.55+(p.y-H*.45)*.28+beat*8;
+  const head={x:bodyX,y:bodyY-95}, body={x:bodyX,y:bodyY-35};
+  const armL={x:bodyX-75+Math.sin(t*5)*20+(p.x-W*.5)*.08,y:bodyY-42+Math.cos(t*4)*20};
+  const armR={x:bodyX+75+Math.cos(t*5)*20+(p.x-W*.5)*.08,y:bodyY-42+Math.sin(t*4)*20};
+  // strings
+  ctx.strokeStyle='rgba(248,211,107,.85)';ctx.lineWidth=2;[[p,head],[p,armL],[p,armR],[p,body]].forEach(([a,b])=>{ctx.beginPath();ctx.moveTo(a.x,a.y);ctx.lineTo(b.x,b.y);ctx.stroke()});
+  ctx.fillStyle='#f8d36b';ctx.beginPath();ctx.arc(p.x,p.y,9,0,Math.PI*2);ctx.fill();
+  // puppet body Chú Tễu style
+  ctx.save();ctx.translate(bodyX,bodyY);ctx.rotate((p.x-W*.5)/W*.35);
+  ctx.fillStyle='#c92828';roundRect(ctx,-43,-72,86,92,24);ctx.fill();
+  ctx.fillStyle='#f8d36b';ctx.fillRect(-30,-45,60,10);ctx.fillRect(-18,-70,36,92);
+  ctx.fillStyle='#f1b071';ctx.beginPath();ctx.arc(0,-105,38,0,Math.PI*2);ctx.fill();
+  ctx.fillStyle='#111';ctx.beginPath();ctx.arc(-13,-112,4,0,Math.PI*2);ctx.arc(13,-112,4,0,Math.PI*2);ctx.fill();
+  ctx.strokeStyle='#8b1e1e';ctx.lineWidth=4;ctx.beginPath();ctx.arc(0,-102,18,.25,Math.PI-.25);ctx.stroke();
+  ctx.fillStyle='#111';ctx.beginPath();ctx.ellipse(0,-142,34,15,0,0,Math.PI*2);ctx.fill();
+  ctx.restore();
+  // arms
+  ctx.strokeStyle='#f1b071';ctx.lineWidth=16;ctx.lineCap='round';ctx.beginPath();ctx.moveTo(bodyX-35,bodyY-50);ctx.lineTo(armL.x,armL.y);ctx.moveTo(bodyX+35,bodyY-50);ctx.lineTo(armR.x,armR.y);ctx.stroke();
+  // reflection
+  ctx.fillStyle='rgba(255,255,255,.09)';ctx.beginPath();ctx.ellipse(bodyX,H*.72,110+beat*6,18,0,0,Math.PI*2);ctx.fill();
+}
+function roundRect(c,x,y,w,h,r){c.beginPath();c.moveTo(x+r,y);c.arcTo(x+w,y,x+w,y+h,r);c.arcTo(x+w,y+h,x,y+h,r);c.arcTo(x,y+h,x,y,r);c.arcTo(x,y,x+w,y,r);c.closePath()}
+function spawnCircle(){circles.push({x:100+Math.random()*(W-200),y:130+Math.random()*(H*.55),r:34,born:performance.now(),life:2600,hit:false})}
+function drawChallenge(){
+  if(document.getElementById('mode').value!=='challenge')return;
+  const now=performance.now(); if(now-lastSpawn>900){spawnCircle();lastSpawn=now}
+  circles=circles.filter(c=>now-c.born<c.life&&!c.hit);
+  for(const c of circles){const age=(now-c.born)/c.life, rr=c.r*(1.3-age*.5);ctx.strokeStyle=`rgba(248,211,107,${1-age})`;ctx.lineWidth=5;ctx.beginPath();ctx.arc(c.x,c.y,rr,0,Math.PI*2);ctx.stroke();ctx.fillStyle=`rgba(123,220,181,${.25*(1-age)})`;ctx.beginPath();ctx.arc(c.x,c.y,c.r,0,Math.PI*2);ctx.fill();}
+  if(indexTip){const fx=indexTip.x*W,fy=indexTip.y*H;for(const c of circles){const d=Math.hypot(fx-c.x,fy-c.y);if(d<c.r){c.hit=true;let pts=d<c.r*.35?100:d<c.r*.65?80:50;score+=pts;hits++;hitText.textContent=pts===100?'Perfect +100':pts===80?'Great +80':'Good +50';scoreEl.textContent=score;acc.style.width=Math.min(100,100*hits/Math.max(1,hits+misses))+'%';beatPulse=1;setTimeout(()=>beatPulse=0,120)}}}
+}
+function loop(){drawStage();drawChallenge();drawPuppet();requestAnimationFrame(loop)} loop();
+const hands=new Hands({locateFile:file=>`https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`});
+hands.setOptions({maxNumHands:1,modelComplexity:1,minDetectionConfidence:.65,minTrackingConfidence:.65});
+hands.onResults(res=>{if(res.multiHandLandmarks&&res.multiHandLandmarks[0]){hand=res.multiHandLandmarks[0];indexTip={x:1-hand[8].x,y:hand[8].y};setStatus('Hand detected. Move your index finger to control the puppet.','ok')}else{hand=null;indexTip=null;if(running)setStatus('Camera on. Show your hand to the camera.')}});
+async function startCamera(){
+ try{ if(!navigator.mediaDevices?.getUserMedia) throw new Error('getUserMedia unavailable. Use HTTPS or localhost.');
+  const stream=await navigator.mediaDevices.getUserMedia({video:{width:640,height:480,facingMode:'user'},audio:false}); video.srcObject=stream; await video.play();
+  cam=new Camera(video,{onFrame:async()=>{await hands.send({image:video})},width:640,height:480}); cam.start(); running=true; setStatus('Camera permission granted. Starting hand tracking...','ok');
+ }catch(e){setStatus('Camera blocked/unavailable: '+e.message,'warn'); alert('Camera access failed. Open this page on https:// or http://localhost, then allow camera permission.');}
+}
+document.getElementById('startCam').onclick=startCamera;document.getElementById('stopCam').onclick=()=>{running=false;if(video.srcObject){video.srcObject.getTracks().forEach(t=>t.stop());video.srcObject=null}setStatus('Camera stopped.')};
+document.getElementById('audioFile').onchange=e=>{const f=e.target.files[0];if(!f)return;audio.src=URL.createObjectURL(f);document.getElementById('musicName').textContent=f.name;audio.play()};
+document.getElementById('playPause').onclick=()=>{ if(audio.src){audio.paused?audio.play():audio.pause()} };
+document.getElementById('volume').oninput=e=>{audio.volume=e.target.value;if(gain)gain.gain.value=e.target.value*.18};
+document.getElementById('demoBeat').onclick=()=>{ if(!audioCtx){audioCtx=new AudioContext();gain=audioCtx.createGain();gain.gain.value=.14;gain.connect(audioCtx.destination)} clearInterval(demoTimer); demoTimer=setInterval(()=>{const o=audioCtx.createOscillator();const g=audioCtx.createGain();o.frequency.value=110;o.type='sine';g.gain.setValueAtTime(.2,audioCtx.currentTime);g.gain.exponentialRampToValueAtTime(.001,audioCtx.currentTime+.18);o.connect(g);g.connect(gain);o.start();o.stop(audioCtx.currentTime+.18);beatPulse=1;setTimeout(()=>beatPulse=0,130)},500);document.getElementById('musicName').textContent='Built-in 120 BPM beat playing';};
+document.getElementById('newGame').onclick=()=>{score=hits=misses=0;circles=[];lastSpawn=0;scoreEl.textContent='0';hitText.textContent='New challenge started.';acc.style.width='0%';document.getElementById('mode').value='challenge'};
+document.getElementById('calibrate').onclick=()=>{if(indexTip){center={x:indexTip.x,y:indexTip.y};hitText.textContent='Center calibrated.'}};addEventListener('keydown',e=>{if(e.key.toLowerCase()==='c')document.getElementById('calibrate').click()});
+</script>
+</body>
+</html>
